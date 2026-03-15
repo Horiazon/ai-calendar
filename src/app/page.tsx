@@ -58,6 +58,8 @@ async function callAI(prompt: string, system?: string) {
 }
 
 export default function App() {
+  const [isMobile, setIsMobile] = useState(false);
+  const [showAI, setShowAI] = useState(false);
   const [view, setView] = useState("week");
   const [baseDate, setBaseDate] = useState(new Date());
   const [blocks, setBlocks] = useState<Block[]>([]);
@@ -69,6 +71,17 @@ export default function App() {
   const [eodPrompt, setEodPrompt] = useState<{ pending: Block[]; idx: number } | null>(null);
   const [actualDur, setActualDur] = useState("");
   const chatEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const check = () => {
+      const mobile = window.innerWidth < 768;
+      setIsMobile(mobile);
+      if (mobile) setView("day");
+    };
+    check();
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -172,8 +185,7 @@ Instructions:
         const newBlocks: Block[] = [];
         parsed.forEach((b, i) => {
           if (b.id == null) {
-            const nb = { ...b, id: now + i, status: "pending", user_id: "default" };
-            newBlocks.push(nb);
+            newBlocks.push({ ...b, id: now + i, status: "pending", user_id: "default" });
           } else {
             updated.push(b);
           }
@@ -187,7 +199,7 @@ Instructions:
         });
         const msg = [newBlocks.length && `Scheduled ${newBlocks.length} new block(s).`, updated.length && `Rescheduled ${updated.length} block(s).`].filter(Boolean).join(" ");
         addChat("ai", msg || "Done!");
-        if (parsed.length) setBaseDate(parseLocalDate(parsed[0].date));
+        if (parsed.length) { setBaseDate(parseLocalDate(parsed[0].date)); if (isMobile) setShowAI(false); }
       } catch { addChat("ai", "Couldn't parse AI response — try rephrasing."); }
     }
     setLoading(false);
@@ -195,9 +207,8 @@ Instructions:
 
   async function markComplete(block: Block) {
     const dur = parseFloat(actualDur) || block.dur;
-    const updated = { ...block, status: "done", actual_dur: dur };
     await supabase.from("blocks").update({ status: "done", actual_dur: dur }).eq("id", block.id);
-    setBlocks(prev => prev.map(b => b.id === block.id ? updated : b));
+    setBlocks(prev => prev.map(b => b.id === block.id ? { ...b, status: "done", actual_dur: dur } : b));
     const newH = { ...habits, completions: [...habits.completions, { startH: block.start_h, category: block.category, date: block.date }], actual_durs: [...habits.actual_durs, dur] };
     setHabits(newH); await saveHabits(newH);
     setActualDur(""); setSelected(null);
@@ -251,28 +262,68 @@ Instructions:
   const headerLabel = view === "week"
     ? `${weekDates[0].toLocaleDateString("en-GB", { month: "short", day: "numeric" })} – ${weekDates[6].toLocaleDateString("en-GB", { month: "short", day: "numeric", year: "numeric" })}`
     : view === "day"
-      ? baseDate.toLocaleDateString("en-GB", { weekday: "long", month: "long", day: "numeric", year: "numeric" })
+      ? baseDate.toLocaleDateString("en-GB", { weekday: isMobile ? "short" : "long", month: "short", day: "numeric", year: "numeric" })
       : baseDate.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
 
   function blockTop(b: Block) { return (b.start_h + b.start_m / 60 - 6) * 56; }
   function blockHeight(b: Block) { return b.dur * 56 - 2; }
   function blockOpacity(b: Block) { return b.status === "skipped" ? 0.35 : b.status === "done" ? 0.65 : 1; }
 
+  const AIPanel = (
+    <div style={{ display: "flex", flexDirection: "column", flex: 1 }}>
+      <div style={{ padding: 12, borderBottom: "1px solid #1e293b" }}>
+        <div style={{ fontWeight: 700, fontSize: 12, color: "#818cf8", marginBottom: 6 }}>✨ AI Assistant</div>
+        <textarea value={input} onChange={e => setInput(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleAI(); } }}
+          placeholder={"Schedule a task…\nor ask: \"Which day am I most free?\""} disabled={loading}
+          style={{ width: "100%", height: 72, background: "#1e293b", border: "1px solid #334155", borderRadius: 8, color: "#e2e8f0", fontSize: 12, padding: 8, resize: "none", boxSizing: "border-box", outline: "none" }} />
+        <button onClick={handleAI} disabled={loading || !input.trim()}
+          style={{ width: "100%", marginTop: 6, padding: "7px 0", background: loading || !input.trim() ? "#1e293b" : "#6366f1", color: loading || !input.trim() ? "#475569" : "#fff", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 12, cursor: loading ? "not-allowed" : "pointer" }}>
+          {loading ? "Thinking…" : "Send ↵"}
+        </button>
+      </div>
+      <div style={{ flex: 1, overflow: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+        {chatLog.length === 0 && <div style={{ color: "#334155", fontSize: 11, textAlign: "center", marginTop: 16, lineHeight: 1.6 }}>Schedule tasks or ask questions.<br />e.g. "Study MA203 3h tomorrow"</div>}
+        {chatLog.map((m, i) => (
+          <div key={i} style={{ background: m.role === "user" ? "#1e293b" : "#1e1b4b", borderRadius: 8, padding: "8px 10px", fontSize: 12, color: m.role === "user" ? "#94a3b8" : "#a5b4fc", alignSelf: m.role === "user" ? "flex-end" : "flex-start", maxWidth: "92%", lineHeight: 1.5 }}>
+            {m.text}
+          </div>
+        ))}
+        <div ref={chatEndRef} />
+      </div>
+      <div style={{ padding: "8px 12px", borderTop: "1px solid #1e293b", display: "flex", flexWrap: "wrap", gap: 4 }}>
+        {Object.entries({ "Study": "#6366f1", "Health": "#10b981", "Admin": "#f59e0b", "Social": "#ec4899", "Rest": "#0ea5e9", "Work/Meeting": "#f97316", "Other": "#64748b" }).map(([k, c]) => (
+          <span key={k} style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 10, color: "#64748b" }}>
+            <span style={{ width: 8, height: 8, borderRadius: 2, background: c, display: "inline-block" }} />{k}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+
   return (
     <div style={{ fontFamily: "Inter,sans-serif", display: "flex", flexDirection: "column", height: "100vh", background: "#0b0f1a", color: "#e2e8f0", overflow: "hidden" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 16px", borderBottom: "1px solid #1e293b", flexShrink: 0, background: "#0f172a" }}>
-        <span style={{ fontWeight: 800, fontSize: 17, color: "#818cf8", letterSpacing: "-0.5px", marginRight: 4 }}>⬡ AI Calendar</span>
+      {/* top bar */}
+      <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 6 : 10, padding: isMobile ? "8px 10px" : "10px 16px", borderBottom: "1px solid #1e293b", flexShrink: 0, background: "#0f172a" }}>
+        <span style={{ fontWeight: 800, fontSize: isMobile ? 14 : 17, color: "#818cf8", letterSpacing: "-0.5px", marginRight: 2 }}>⬡ {!isMobile && "AI Calendar"}</span>
         <button onClick={() => navigate(-1)} style={S.nav}>‹</button>
-        <button onClick={() => setBaseDate(new Date())} style={{ ...S.nav, fontSize: 11, padding: "3px 10px" }}>Today</button>
+        <button onClick={() => setBaseDate(new Date())} style={{ ...S.nav, fontSize: 11, padding: "3px 8px" }}>Today</button>
         <button onClick={() => navigate(1)} style={S.nav}>›</button>
-        <span style={{ flex: 1, textAlign: "center", fontWeight: 600, fontSize: 13, color: "#94a3b8" }}>{headerLabel}</span>
-        {VIEWS.map(v => (
+        <span style={{ flex: 1, textAlign: "center", fontWeight: 600, fontSize: isMobile ? 11 : 13, color: "#94a3b8" }}>{headerLabel}</span>
+        {!isMobile && VIEWS.map(v => (
           <button key={v} onClick={() => setView(v)} style={{ ...S.tab, background: view === v ? "#6366f1" : "#1e293b", textTransform: "capitalize" }}>{v}</button>
         ))}
-        <button onClick={startEodReview} style={{ ...S.tab, background: "#1e293b", color: "#fbbf24", border: "1px solid #78350f" }}>☀ Review</button>
+        {isMobile && (
+          <button onClick={() => setView(v => v === "day" ? "week" : "day")} style={{ ...S.tab, background: "#1e293b", fontSize: 11 }}>{view === "day" ? "Week" : "Day"}</button>
+        )}
+        <button onClick={startEodReview} style={{ ...S.tab, background: "#1e293b", color: "#fbbf24", border: "1px solid #78350f" }}>{isMobile ? "☀" : "☀ Review"}</button>
+        {isMobile && (
+          <button onClick={() => setShowAI(true)} style={{ ...S.tab, background: "#6366f1", color: "#fff" }}>✨ AI</button>
+        )}
       </div>
 
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
+        {/* calendar */}
         <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
           {view !== "month" && (
             <div style={{ display: "flex", borderBottom: "1px solid #1e293b", flexShrink: 0, background: "#0f172a" }}>
@@ -325,36 +376,23 @@ Instructions:
           </div>
         </div>
 
-        <div style={{ width: 288, borderLeft: "1px solid #1e293b", display: "flex", flexDirection: "column", flexShrink: 0, background: "#0f172a" }}>
-          <div style={{ padding: 12, borderBottom: "1px solid #1e293b" }}>
-            <div style={{ fontWeight: 700, fontSize: 12, color: "#818cf8", marginBottom: 6 }}>✨ AI Assistant</div>
-            <textarea value={input} onChange={e => setInput(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleAI(); } }}
-              placeholder={"Schedule a task…\nor ask: \"Which day am I most free?\""} disabled={loading}
-              style={{ width: "100%", height: 72, background: "#1e293b", border: "1px solid #334155", borderRadius: 8, color: "#e2e8f0", fontSize: 12, padding: 8, resize: "none", boxSizing: "border-box", outline: "none" }} />
-            <button onClick={handleAI} disabled={loading || !input.trim()}
-              style={{ width: "100%", marginTop: 6, padding: "7px 0", background: loading || !input.trim() ? "#1e293b" : "#6366f1", color: loading || !input.trim() ? "#475569" : "#fff", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 12, cursor: loading ? "not-allowed" : "pointer" }}>
-              {loading ? "Thinking…" : "Send ↵"}
-            </button>
+        {/* desktop AI panel */}
+        {!isMobile && (
+          <div style={{ width: 288, borderLeft: "1px solid #1e293b", display: "flex", flexDirection: "column", flexShrink: 0, background: "#0f172a" }}>
+            {AIPanel}
           </div>
-          <div style={{ flex: 1, overflow: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
-            {chatLog.length === 0 && <div style={{ color: "#334155", fontSize: 11, textAlign: "center", marginTop: 16, lineHeight: 1.6 }}>Schedule tasks or ask questions.<br />e.g. "Study MA203 3h tomorrow"</div>}
-            {chatLog.map((m, i) => (
-              <div key={i} style={{ background: m.role === "user" ? "#1e293b" : "#1e1b4b", borderRadius: 8, padding: "8px 10px", fontSize: 12, color: m.role === "user" ? "#94a3b8" : "#a5b4fc", alignSelf: m.role === "user" ? "flex-end" : "flex-start", maxWidth: "92%", lineHeight: 1.5 }}>
-                {m.text}
-              </div>
-            ))}
-            <div ref={chatEndRef} />
-          </div>
-          <div style={{ padding: "8px 12px", borderTop: "1px solid #1e293b", display: "flex", flexWrap: "wrap", gap: 4 }}>
-            {Object.entries({ "Study": "#6366f1", "Health": "#10b981", "Admin": "#f59e0b", "Social": "#ec4899", "Rest": "#0ea5e9", "Work/Meeting": "#f97316", "Other": "#64748b" }).map(([k, c]) => (
-              <span key={k} style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 10, color: "#64748b" }}>
-                <span style={{ width: 8, height: 8, borderRadius: 2, background: c, display: "inline-block" }} />{k}
-              </span>
-            ))}
+        )}
+      </div>
+
+      {/* mobile AI bottom sheet */}
+      {isMobile && showAI && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 150 }} onClick={() => setShowAI(false)}>
+          <div onClick={e => e.stopPropagation()} style={{ position: "absolute", bottom: 0, left: 0, right: 0, background: "#0f172a", borderRadius: "16px 16px 0 0", padding: "12px 16px 24px", maxHeight: "80vh", display: "flex", flexDirection: "column" }}>
+            <div style={{ width: 40, height: 4, background: "#334155", borderRadius: 2, margin: "0 auto 12px" }} />
+            {AIPanel}
           </div>
         </div>
-      </div>
+      )}
 
       {selected && <BlockModal block={selected} onClose={() => { setSelected(null); setActualDur(""); }} onDelete={() => deleteBlock(selected.id)} onToggleFixed={() => toggleFixed(selected.id)} onComplete={() => markComplete(selected)} onSkip={() => markSkipped(selected)} actualDur={actualDur} setActualDur={setActualDur} />}
       {eodPrompt && <EodModal state={eodPrompt} onAction={eodNext} onClose={() => setEodPrompt(null)} />}
@@ -384,7 +422,7 @@ function MonthView({ dates, blocks, baseDate, onDayClick, onBlockClick }: { date
 function BlockModal({ block, onClose, onDelete, onToggleFixed, onComplete, onSkip, actualDur, setActualDur }: { block: Block; onClose: () => void; onDelete: () => void; onToggleFixed: () => void; onComplete: () => void; onSkip: () => void; actualDur: string; setActualDur: (s: string) => void }) {
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }} onClick={onClose}>
-      <div onClick={e => e.stopPropagation()} style={{ background: "#1e293b", borderRadius: 12, padding: 20, width: 300, boxShadow: "0 8px 32px rgba(0,0,0,0.5)" }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#1e293b", borderRadius: 12, padding: 20, width: 300, boxShadow: "0 8px 32px rgba(0,0,0,0.5)", margin: "0 16px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
           <span style={{ width: 12, height: 12, borderRadius: 3, background: catColor(block.category), flexShrink: 0 }} />
           <span style={{ fontWeight: 700, fontSize: 15, color: "#e2e8f0", flex: 1 }}>{block.title}</span>
@@ -416,7 +454,7 @@ function EodModal({ state, onAction, onClose }: { state: { pending: Block[]; idx
   const block = state.pending[state.idx];
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200 }}>
-      <div style={{ background: "#1e293b", borderRadius: 14, padding: 24, width: 320, boxShadow: "0 8px 40px rgba(0,0,0,0.6)" }}>
+      <div style={{ background: "#1e293b", borderRadius: 14, padding: 24, width: 320, boxShadow: "0 8px 40px rgba(0,0,0,0.6)", margin: "0 16px" }}>
         <div style={{ fontWeight: 700, fontSize: 14, color: "#fbbf24", marginBottom: 4 }}>☀ End-of-day Review</div>
         <div style={{ fontSize: 12, color: "#64748b", marginBottom: 16 }}>{state.idx + 1} / {state.pending.length}</div>
         <div style={{ fontWeight: 700, fontSize: 15, color: "#e2e8f0", marginBottom: 4 }}>{block.title}</div>
